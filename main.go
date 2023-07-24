@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/apparentlymart/go-shquot/shquot"
 	"github.com/hashicorp/go-plugin"
@@ -66,6 +67,11 @@ func main() {
 
 func realMain() int {
 	defer logging.PanicHandler()
+
+	start := time.Now()
+	defer func(start time.Time) {
+		fmt.Printf("[INFO] Terraform exited in %s.\n", time.Since(start))
+	}(start)
 
 	var err error
 
