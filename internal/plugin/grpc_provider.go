@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/zclconf/go-cty/cty"
 
@@ -87,6 +88,11 @@ func (p *GRPCProvider) getSchema() providers.GetProviderSchemaResponse {
 
 func (p *GRPCProvider) GetProviderSchema() (resp providers.GetProviderSchemaResponse) {
 	logger.Trace("GRPCProvider: GetProviderSchema")
+	start := time.Now()
+	defer func(start time.Time) {
+		logger.Info("GRPCProvider: GetProviderSchema completed", "duration", time.Since(start))
+	}(start)
+
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -202,6 +208,10 @@ func (p *GRPCProvider) GetProviderSchema() (resp providers.GetProviderSchemaResp
 
 func (p *GRPCProvider) ValidateProviderConfig(r providers.ValidateProviderConfigRequest) (resp providers.ValidateProviderConfigResponse) {
 	logger.Trace("GRPCProvider: ValidateProviderConfig")
+	start := time.Now()
+	defer func(start time.Time) {
+		logger.Info("GRPCProvider: ValidateProviderConfig completed", "duration", time.Since(start))
+	}(start)
 
 	schema := p.getSchema()
 	if schema.Diagnostics.HasErrors() {
@@ -240,6 +250,10 @@ func (p *GRPCProvider) ValidateProviderConfig(r providers.ValidateProviderConfig
 
 func (p *GRPCProvider) ValidateResourceConfig(r providers.ValidateResourceConfigRequest) (resp providers.ValidateResourceConfigResponse) {
 	logger.Trace("GRPCProvider: ValidateResourceConfig")
+	start := time.Now()
+	defer func(start time.Time) {
+		logger.Info("GRPCProvider: ValidateResourceConfig completed", "duration", time.Since(start))
+	}(start)
 
 	schema := p.getSchema()
 	if schema.Diagnostics.HasErrors() {
@@ -276,6 +290,10 @@ func (p *GRPCProvider) ValidateResourceConfig(r providers.ValidateResourceConfig
 
 func (p *GRPCProvider) ValidateDataResourceConfig(r providers.ValidateDataResourceConfigRequest) (resp providers.ValidateDataResourceConfigResponse) {
 	logger.Trace("GRPCProvider: ValidateDataResourceConfig")
+	start := time.Now()
+	defer func(start time.Time) {
+		logger.Info("GRPCProvider: ValidateDataResourceConfig completed", "duration", time.Since(start))
+	}(start)
 
 	schema := p.getSchema()
 	if schema.Diagnostics.HasErrors() {
@@ -311,6 +329,10 @@ func (p *GRPCProvider) ValidateDataResourceConfig(r providers.ValidateDataResour
 
 func (p *GRPCProvider) UpgradeResourceState(r providers.UpgradeResourceStateRequest) (resp providers.UpgradeResourceStateResponse) {
 	logger.Trace("GRPCProvider: UpgradeResourceState")
+	start := time.Now()
+	defer func(start time.Time) {
+		logger.Info("GRPCProvider: UpgradeResourceState completed", "duration", time.Since(start))
+	}(start)
 
 	schema := p.getSchema()
 	if schema.Diagnostics.HasErrors() {
@@ -358,6 +380,10 @@ func (p *GRPCProvider) UpgradeResourceState(r providers.UpgradeResourceStateRequ
 
 func (p *GRPCProvider) ConfigureProvider(r providers.ConfigureProviderRequest) (resp providers.ConfigureProviderResponse) {
 	logger.Trace("GRPCProvider: ConfigureProvider")
+	start := time.Now()
+	defer func(start time.Time) {
+		logger.Info("GRPCProvider: ConfigureProvider completed", "duration", time.Since(start))
+	}(start)
 
 	schema := p.getSchema()
 	if schema.Diagnostics.HasErrors() {
@@ -406,6 +432,10 @@ func (p *GRPCProvider) Stop() error {
 
 func (p *GRPCProvider) ReadResource(r providers.ReadResourceRequest) (resp providers.ReadResourceResponse) {
 	logger.Trace("GRPCProvider: ReadResource")
+	start := time.Now()
+	defer func(start time.Time) {
+		logger.Info("GRPCProvider: ReadResource completed", "duration", time.Since(start))
+	}(start)
 
 	schema := p.getSchema()
 	if schema.Diagnostics.HasErrors() {
@@ -462,6 +492,10 @@ func (p *GRPCProvider) ReadResource(r providers.ReadResourceRequest) (resp provi
 
 func (p *GRPCProvider) PlanResourceChange(r providers.PlanResourceChangeRequest) (resp providers.PlanResourceChangeResponse) {
 	logger.Trace("GRPCProvider: PlanResourceChange")
+	start := time.Now()
+	defer func(start time.Time) {
+		logger.Info("GRPCProvider: PlanResourceChange completed", "duration", time.Since(start))
+	}(start)
 
 	schema := p.getSchema()
 	if schema.Diagnostics.HasErrors() {
@@ -548,6 +582,10 @@ func (p *GRPCProvider) PlanResourceChange(r providers.PlanResourceChangeRequest)
 
 func (p *GRPCProvider) ApplyResourceChange(r providers.ApplyResourceChangeRequest) (resp providers.ApplyResourceChangeResponse) {
 	logger.Trace("GRPCProvider: ApplyResourceChange")
+	start := time.Now()
+	defer func(start time.Time) {
+		logger.Info("GRPCProvider: ApplyResourceChange completed", "duration", time.Since(start))
+	}(start)
 
 	schema := p.getSchema()
 	if schema.Diagnostics.HasErrors() {
@@ -619,6 +657,10 @@ func (p *GRPCProvider) ApplyResourceChange(r providers.ApplyResourceChangeReques
 
 func (p *GRPCProvider) ImportResourceState(r providers.ImportResourceStateRequest) (resp providers.ImportResourceStateResponse) {
 	logger.Trace("GRPCProvider: ImportResourceState")
+	start := time.Now()
+	defer func(start time.Time) {
+		logger.Info("GRPCProvider: ImportResourceState completed", "duration", time.Since(start))
+	}(start)
 
 	schema := p.getSchema()
 	if schema.Diagnostics.HasErrors() {
@@ -664,6 +706,10 @@ func (p *GRPCProvider) ImportResourceState(r providers.ImportResourceStateReques
 
 func (p *GRPCProvider) ReadDataSource(r providers.ReadDataSourceRequest) (resp providers.ReadDataSourceResponse) {
 	logger.Trace("GRPCProvider: ReadDataSource")
+	start := time.Now()
+	defer func(start time.Time) {
+		logger.Info("GRPCProvider: ReadDataSource completed", "duration", time.Since(start))
+	}(start)
 
 	schema := p.getSchema()
 	if schema.Diagnostics.HasErrors() {
@@ -720,6 +766,10 @@ func (p *GRPCProvider) ReadDataSource(r providers.ReadDataSourceRequest) (resp p
 // closing the grpc connection is final, and terraform will call it at the end of every phase.
 func (p *GRPCProvider) Close() error {
 	logger.Trace("GRPCProvider: Close")
+	start := time.Now()
+	defer func(start time.Time) {
+		logger.Info("GRPCProvider: Close completed", "duration", time.Since(start))
+	}(start)
 
 	// Make sure to stop the server if we're not running within go-plugin.
 	if p.TestServer != nil {
