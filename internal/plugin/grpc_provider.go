@@ -5,9 +5,14 @@ package plugin
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
+	"math/big"
+	"os"
+	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/zclconf/go-cty/cty"
 
@@ -20,6 +25,7 @@ import (
 	ctyjson "github.com/zclconf/go-cty/cty/json"
 	"github.com/zclconf/go-cty/cty/msgpack"
 	"google.golang.org/grpc"
+	googleproto "google.golang.org/protobuf/proto"
 )
 
 var logger = logging.HCLogger()
@@ -75,15 +81,24 @@ type GRPCProvider struct {
 
 func (p *GRPCProvider) GetProviderSchema() (resp providers.GetProviderSchemaResponse) {
 	logger.Trace("GRPCProvider: GetProviderSchema")
+	start := time.Now()
+	defer func(start time.Time) {
+		logger.Info("GRPCProvider: GetProviderSchema completed", "duration", time.Since(start))
+	}(start)
+
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	// check the global cache if we can
-	if !p.Addr.IsZero() && resp.ServerCapabilities.GetProviderSchemaOptional {
+	// UPBOUND CHANGE: not depend on ServerCapabilities.GetProviderSchemaOptional, but assume
+	//                 there is only a cached schema if the provider is cappable of reusing it.
+	if !p.Addr.IsZero() {
 		if resp, ok := providers.SchemaCache.Get(p.Addr); ok {
+			logger.Info("Using cached schema", "file", "in-memory")
 			return resp
 		}
 	}
+	// UPBOUND CHANGE: end
 
 	// If the local cache is non-zero, we know this instance has called
 	// GetProviderSchema at least once and we can return early.
@@ -94,6 +109,38 @@ func (p *GRPCProvider) GetProviderSchema() (resp providers.GetProviderSchemaResp
 	resp.ResourceTypes = make(map[string]providers.Schema)
 	resp.DataSources = make(map[string]providers.Schema)
 
+	// UPBOUND CHANGE: look provider schema up in in-memory cache and on disk.
+	//                 On disk we store the protobuf binary.
+	// check in-memory cache
+	var cacheFilePath string
+	var protoResp *proto.GetProviderSchema_Response
+	cacheAddr := p.Addr
+	if cacheDir := os.Getenv("TF_CACHE_DIR"); cacheDir != "" && p.PluginClient != nil {
+		if reattachConfig := p.PluginClient.ReattachConfig(); reattachConfig != nil {
+			id := base36Hash(fmt.Sprintf("%v", reattachConfig))
+			cacheAddr = addrs.NewBuiltInProvider(id)
+			cacheFilePath = filepath.Join(cacheDir, fmt.Sprintf("provider-getproviderschema-%s.bin", id))
+
+			// check in-memory cache, now with non-zero cache address
+			if resp, ok := providers.SchemaCache.Get(cacheAddr); ok {
+				logger.Info("Using cached schema", "file", "in-memory")
+				return resp
+			}
+
+			// check on disk cache
+			if bs, err := os.ReadFile(cacheFilePath); err == nil {
+				logger.Info("Using cached schema", "file", cacheFilePath)
+				protoResp = new(proto.GetProviderSchema_Response)
+				if err := googleproto.Unmarshal(bs, protoResp); err != nil {
+					protoResp = nil
+					logger.Warn("failed to unmarshal cached schema", "error", err)
+					// fall-through
+				}
+			}
+		}
+	}
+	// UPBOUND CHANGE: end
+
 	// Some providers may generate quite large schemas, and the internal default
 	// grpc response size limit is 4MB. 64MB should cover most any use case, and
 	// if we get providers nearing that we may want to consider a finer-grained
@@ -102,17 +149,47 @@ func (p *GRPCProvider) GetProviderSchema() (resp providers.GetProviderSchemaResp
 	// this for compatibility, but recent providers all set the max message
 	// size much higher on the server side, which is the supported method for
 	// determining payload size.
-	const maxRecvSize = 64 << 20
-	protoResp, err := p.client.GetSchema(p.ctx, new(proto.GetProviderSchema_Request), grpc.MaxRecvMsgSizeCallOption{MaxRecvMsgSize: maxRecvSize})
-	if err != nil {
-		resp.Diagnostics = resp.Diagnostics.Append(grpcErr(err))
-		return resp
-	}
+	if protoResp == nil {
+		const maxRecvSize = 64 << 20
+		var err error
+		protoResp, err = p.client.GetSchema(p.ctx, new(proto.GetProviderSchema_Request), grpc.MaxRecvMsgSizeCallOption{MaxRecvMsgSize: maxRecvSize})
+		if err != nil {
+			resp.Diagnostics = resp.Diagnostics.Append(grpcErr(err))
+			return resp
+		}
 
-	resp.Diagnostics = resp.Diagnostics.Append(convert.ProtoToDiagnostics(protoResp.Diagnostics))
+		// UPBOUND CHANGE: cache provider schema in memory and on disk.
+		if !resp.Diagnostics.HasErrors() && cacheFilePath != "" {
+			// use a temporary file to make this atomic because there can be multiple
+			// instance of the terraform process running at the same time.
+			tmpFile, err := os.CreateTemp(filepath.Dir(cacheFilePath), filepath.Base(cacheFilePath))
+			if err != nil {
+				logger.Warn("failed to create schema cache file", "error", err, "file", cacheFilePath)
+				// fall-through
+			} else if bs, err := googleproto.Marshal(protoResp); err != nil {
+				logger.Warn("failed to marshal schema", "error", err)
+				// fall-through
+			} else if _, err := tmpFile.Write(bs); err != nil {
+				logger.Warn("failed to write schema cache file", "error", err, "file", cacheFilePath)
+				tmpFile.Close()           // nolint: errcheck
+				os.Remove(tmpFile.Name()) // nolint: errcheck
+				// fall-through
+			} else if err := os.Rename(tmpFile.Name(), cacheFilePath); err != nil {
+				logger.Warn("failed to rename schema cache file", "error", err, "file", cacheFilePath)
+				tmpFile.Close()           // nolint: errcheck
+				os.Remove(tmpFile.Name()) // nolint: errcheck
+				// fall-through
+			} else {
+				logger.Info("Wrote schema cache file", "file", cacheFilePath)
+			}
+		}
+		// UPBOUND CHANGE: end
 
-	if resp.Diagnostics.HasErrors() {
-		return resp
+		resp.Diagnostics = resp.Diagnostics.Append(convert.ProtoToDiagnostics(protoResp.Diagnostics))
+
+		if resp.Diagnostics.HasErrors() {
+			return resp
+		}
 	}
 
 	if protoResp.Provider == nil {
@@ -141,9 +218,13 @@ func (p *GRPCProvider) GetProviderSchema() (resp providers.GetProviderSchemaResp
 	}
 
 	// set the global cache if we can
-	if !p.Addr.IsZero() {
-		providers.SchemaCache.Set(p.Addr, resp)
+	// UPBOUND CHANGE: set the global cache with our cacheAddr in external provider mode
+	if !cacheAddr.IsZero() {
+		if _, ok := providers.SchemaCache.Get(cacheAddr); !ok {
+			providers.SchemaCache.Set(cacheAddr, resp)
+		}
 	}
+	// UPBOUND CHANGE: end
 
 	// always store this here in the client for providers that are not able to
 	// use GetProviderSchemaOptional
@@ -154,6 +235,10 @@ func (p *GRPCProvider) GetProviderSchema() (resp providers.GetProviderSchemaResp
 
 func (p *GRPCProvider) ValidateProviderConfig(r providers.ValidateProviderConfigRequest) (resp providers.ValidateProviderConfigResponse) {
 	logger.Trace("GRPCProvider: ValidateProviderConfig")
+	start := time.Now()
+	defer func(start time.Time) {
+		logger.Info("GRPCProvider: ValidateProviderConfig completed", "duration", time.Since(start))
+	}(start)
 
 	schema := p.GetProviderSchema()
 	if schema.Diagnostics.HasErrors() {
@@ -192,6 +277,10 @@ func (p *GRPCProvider) ValidateProviderConfig(r providers.ValidateProviderConfig
 
 func (p *GRPCProvider) ValidateResourceConfig(r providers.ValidateResourceConfigRequest) (resp providers.ValidateResourceConfigResponse) {
 	logger.Trace("GRPCProvider: ValidateResourceConfig")
+	start := time.Now()
+	defer func(start time.Time) {
+		logger.Info("GRPCProvider: ValidateResourceConfig completed", "duration", time.Since(start))
+	}(start)
 
 	schema := p.GetProviderSchema()
 	if schema.Diagnostics.HasErrors() {
@@ -228,6 +317,10 @@ func (p *GRPCProvider) ValidateResourceConfig(r providers.ValidateResourceConfig
 
 func (p *GRPCProvider) ValidateDataResourceConfig(r providers.ValidateDataResourceConfigRequest) (resp providers.ValidateDataResourceConfigResponse) {
 	logger.Trace("GRPCProvider: ValidateDataResourceConfig")
+	start := time.Now()
+	defer func(start time.Time) {
+		logger.Info("GRPCProvider: ValidateDataResourceConfig completed", "duration", time.Since(start))
+	}(start)
 
 	schema := p.GetProviderSchema()
 	if schema.Diagnostics.HasErrors() {
@@ -263,6 +356,10 @@ func (p *GRPCProvider) ValidateDataResourceConfig(r providers.ValidateDataResour
 
 func (p *GRPCProvider) UpgradeResourceState(r providers.UpgradeResourceStateRequest) (resp providers.UpgradeResourceStateResponse) {
 	logger.Trace("GRPCProvider: UpgradeResourceState")
+	start := time.Now()
+	defer func(start time.Time) {
+		logger.Info("GRPCProvider: UpgradeResourceState completed", "duration", time.Since(start))
+	}(start)
 
 	schema := p.GetProviderSchema()
 	if schema.Diagnostics.HasErrors() {
@@ -310,6 +407,10 @@ func (p *GRPCProvider) UpgradeResourceState(r providers.UpgradeResourceStateRequ
 
 func (p *GRPCProvider) ConfigureProvider(r providers.ConfigureProviderRequest) (resp providers.ConfigureProviderResponse) {
 	logger.Trace("GRPCProvider: ConfigureProvider")
+	start := time.Now()
+	defer func(start time.Time) {
+		logger.Info("GRPCProvider: ConfigureProvider completed", "duration", time.Since(start))
+	}(start)
 
 	schema := p.GetProviderSchema()
 	if schema.Diagnostics.HasErrors() {
@@ -358,6 +459,10 @@ func (p *GRPCProvider) Stop() error {
 
 func (p *GRPCProvider) ReadResource(r providers.ReadResourceRequest) (resp providers.ReadResourceResponse) {
 	logger.Trace("GRPCProvider: ReadResource")
+	start := time.Now()
+	defer func(start time.Time) {
+		logger.Info("GRPCProvider: ReadResource completed", "duration", time.Since(start))
+	}(start)
 
 	schema := p.GetProviderSchema()
 	if schema.Diagnostics.HasErrors() {
@@ -414,6 +519,10 @@ func (p *GRPCProvider) ReadResource(r providers.ReadResourceRequest) (resp provi
 
 func (p *GRPCProvider) PlanResourceChange(r providers.PlanResourceChangeRequest) (resp providers.PlanResourceChangeResponse) {
 	logger.Trace("GRPCProvider: PlanResourceChange")
+	start := time.Now()
+	defer func(start time.Time) {
+		logger.Info("GRPCProvider: PlanResourceChange completed", "duration", time.Since(start))
+	}(start)
 
 	schema := p.GetProviderSchema()
 	if schema.Diagnostics.HasErrors() {
@@ -500,6 +609,10 @@ func (p *GRPCProvider) PlanResourceChange(r providers.PlanResourceChangeRequest)
 
 func (p *GRPCProvider) ApplyResourceChange(r providers.ApplyResourceChangeRequest) (resp providers.ApplyResourceChangeResponse) {
 	logger.Trace("GRPCProvider: ApplyResourceChange")
+	start := time.Now()
+	defer func(start time.Time) {
+		logger.Info("GRPCProvider: ApplyResourceChange completed", "duration", time.Since(start))
+	}(start)
 
 	schema := p.GetProviderSchema()
 	if schema.Diagnostics.HasErrors() {
@@ -571,6 +684,10 @@ func (p *GRPCProvider) ApplyResourceChange(r providers.ApplyResourceChangeReques
 
 func (p *GRPCProvider) ImportResourceState(r providers.ImportResourceStateRequest) (resp providers.ImportResourceStateResponse) {
 	logger.Trace("GRPCProvider: ImportResourceState")
+	start := time.Now()
+	defer func(start time.Time) {
+		logger.Info("GRPCProvider: ImportResourceState completed", "duration", time.Since(start))
+	}(start)
 
 	schema := p.GetProviderSchema()
 	if schema.Diagnostics.HasErrors() {
@@ -616,6 +733,10 @@ func (p *GRPCProvider) ImportResourceState(r providers.ImportResourceStateReques
 
 func (p *GRPCProvider) ReadDataSource(r providers.ReadDataSourceRequest) (resp providers.ReadDataSourceResponse) {
 	logger.Trace("GRPCProvider: ReadDataSource")
+	start := time.Now()
+	defer func(start time.Time) {
+		logger.Info("GRPCProvider: ReadDataSource completed", "duration", time.Since(start))
+	}(start)
 
 	schema := p.GetProviderSchema()
 	if schema.Diagnostics.HasErrors() {
@@ -672,6 +793,10 @@ func (p *GRPCProvider) ReadDataSource(r providers.ReadDataSourceRequest) (resp p
 // closing the grpc connection is final, and terraform will call it at the end of every phase.
 func (p *GRPCProvider) Close() error {
 	logger.Trace("GRPCProvider: Close")
+	start := time.Now()
+	defer func(start time.Time) {
+		logger.Info("GRPCProvider: Close completed", "duration", time.Since(start))
+	}(start)
 
 	// Make sure to stop the server if we're not running within go-plugin.
 	if p.TestServer != nil {
@@ -708,3 +833,13 @@ func decodeDynamicValue(v *proto.DynamicValue, ty cty.Type) (cty.Value, error) {
 	}
 	return res, err
 }
+
+// UPBOUND CHANGE: helpers
+
+func base36Hash(input string) string {
+	hash := sha256.Sum256([]byte(input))
+	bigInt := new(big.Int).SetBytes(hash[:])
+	return bigInt.Text(36)
+}
+
+// UPBOUND CHANGE: end
