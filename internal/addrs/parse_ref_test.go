@@ -751,7 +751,7 @@ func TestParseRef(t *testing.T) {
 			}
 
 			for _, problem := range deep.Equal(got, test.Want) {
-				t.Errorf(problem)
+				t.Errorf("%s", problem)
 			}
 		})
 	}
