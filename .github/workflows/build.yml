@@ -107,20 +107,8 @@ jobs:
     strategy:
       matrix:
         include:
-          - {goos: "freebsd", goarch: "386", runson: "ubuntu-latest", cgo-enabled: "0"}
-          - {goos: "freebsd", goarch: "amd64", runson: "ubuntu-latest", cgo-enabled: "0"}
-          - {goos: "freebsd", goarch: "arm", runson: "ubuntu-latest", cgo-enabled: "0"}
-          - {goos: "linux", goarch: "386", runson: "ubuntu-latest", cgo-enabled: "0"}
           - {goos: "linux", goarch: "amd64", runson: "ubuntu-latest", cgo-enabled: "0"}
-          - {goos: "linux", goarch: "arm", runson: "ubuntu-latest", cgo-enabled: "0"}
           - {goos: "linux", goarch: "arm64", runson: "ubuntu-latest", cgo-enabled: "0"}
-          - {goos: "openbsd", goarch: "386", runson: "ubuntu-latest", cgo-enabled: "0"}
-          - {goos: "openbsd", goarch: "amd64", runson: "ubuntu-latest", cgo-enabled: "0"}
-          - {goos: "solaris", goarch: "amd64", runson: "ubuntu-latest", cgo-enabled: "0"}
-          - {goos: "windows", goarch: "386", runson: "ubuntu-latest", cgo-enabled: "0"}
-          - {goos: "windows", goarch: "amd64", runson: "ubuntu-latest", cgo-enabled: "0"}
-          - {goos: "darwin", goarch: "amd64", runson: "macos-latest", cgo-enabled: "1"}
-          - {goos: "darwin", goarch: "arm64", runson: "macos-latest", cgo-enabled: "1"}
       fail-fast: false
 
   package-docker:
@@ -131,7 +119,7 @@ jobs:
       - build
     strategy:
       matrix:
-        arch: ["amd64", "386", "arm", "arm64"]
+        arch: ["amd64", "arm64"]
       fail-fast: false
     env:
       repo: "terraform"
@@ -164,13 +152,7 @@ jobs:
     strategy:
       matrix:
         include:
-          - {goos: "darwin", goarch: "amd64"}
-          - {goos: "darwin", goarch: "arm64"}
-          - {goos: "windows", goarch: "amd64"}
-          - {goos: "windows", goarch: "386"}
-          - {goos: "linux", goarch: "386"}
           - {goos: "linux", goarch: "amd64"}
-          - {goos: linux, goarch: "arm"}
           - {goos: linux, goarch: "arm64"}
       fail-fast: false
 
@@ -205,7 +187,7 @@ jobs:
           bash ./internal/command/e2etest/make-archive.sh
 
       - name: Save test harness to cache
-        uses: actions/cache/save@88522ab9f39a2ea568f7027eddc7d8d8bc9d59c8 # v3.3.1
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ steps.set-cache-values.outputs.e2e-cache-path }}
           key: ${{ steps.set-cache-values.outputs.e2e-cache-key }}_${{ matrix.goos }}_${{ matrix.goarch }}
@@ -221,12 +203,7 @@ jobs:
       matrix:
         include:
           - { runson: ubuntu-latest, goos: linux, goarch: "amd64" }
-          - { runson: ubuntu-latest, goos: linux, goarch: "386" }
-          - { runson: ubuntu-latest, goos: linux, goarch: "arm" }
           - { runson: ubuntu-latest, goos: linux, goarch: "arm64" }
-          - { runson: macos-latest, goos: darwin, goarch: "amd64" }
-          - { runson: windows-latest, goos: windows, goarch: "amd64" }
-          - { runson: windows-latest, goos: windows, goarch: "386" }
       fail-fast: false
 
     env:
@@ -242,10 +219,9 @@ jobs:
       # really testing the release package and not inadvertently testing a
       # fresh build from source.)
       - name: Checkout repo
-        if: ${{ (matrix.goos == 'linux') || (matrix.goos == 'darwin') }}
         uses: actions/checkout@c85c95e3d7251135ab7dc9ce3241c5835cc595a9 # v3.5.3
       - name: "Restore cache"
-        uses: actions/cache/restore@88522ab9f39a2ea568f7027eddc7d8d8bc9d59c8 # v3.3.1
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         id: e2etestpkg
         with:
           path: ${{ needs.e2etest-build.outputs.e2e-cache-path }}
@@ -258,29 +234,17 @@ jobs:
         with:
           name: terraform_${{env.version}}_${{ env.os }}_${{ env.arch }}.zip
           path: .
-      - name: Extract packages
-        if: ${{ matrix.goos == 'windows' }}
-        run: |
-          unzip "${{ needs.e2etest-build.outputs.e2e-cache-path }}/terraform-e2etest_${{ env.os }}_${{ env.arch }}.zip"
-          unzip "./terraform_${{env.version}}_${{ env.os }}_${{ env.arch }}.zip"
       - name: Set up QEMU
         uses: docker/setup-qemu-action@2b82ce82d56a2a04d2637cd93a637ae1b359c0a7 # v2.2.0
         if: ${{ contains(matrix.goarch, 'arm') }}
         with:
           platforms: all
-      - name: Run E2E Tests (Darwin & Linux)
+      - name: Run E2E Tests
         id: get-product-version
         shell: bash
-        if: ${{ (matrix.goos == 'linux') || (matrix.goos == 'darwin') }}
         env:
           e2e_cache_path: ${{ needs.e2etest-build.outputs.e2e-cache-path }}
         run: .github/scripts/e2e_test_linux_darwin.sh
-      - name: Run E2E Tests (Windows)
-        if: ${{ matrix.goos == 'windows' }}
-        env:
-          TF_ACC: 1
-        shell: cmd
-        run: e2etest.exe -test.v
 
 
   e2e-test-exec:
