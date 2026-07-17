@@ -9,15 +9,14 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"log"
 	"strings"
 
-	// TODO: replace crypto/openpgp since it is deprecated
-	// https://github.com/golang/go/issues/44226
-	//lint:file-ignore SA1019 openpgp is deprecated but there are no good alternatives yet
-	"golang.org/x/crypto/openpgp"
-	openpgpArmor "golang.org/x/crypto/openpgp/armor"
-	openpgpErrors "golang.org/x/crypto/openpgp/errors"
+	"github.com/ProtonMail/go-crypto/openpgp"
+	openpgpArmor "github.com/ProtonMail/go-crypto/openpgp/armor"
+	openpgpErrors "github.com/ProtonMail/go-crypto/openpgp/errors"
+	openpgpPacket "github.com/ProtonMail/go-crypto/openpgp/packet"
 )
 
 type packageAuthenticationResult int
@@ -27,6 +26,12 @@ const (
 	officialProvider
 	partnerProvider
 	communityProvider
+)
+
+var (
+	// openpgpConfig is only populated during testing, so that a fake clock can be
+	// injected, preventing signature expiration errors.
+	openpgpConfig *openpgpPacket.Config
 )
 
 // PackageAuthenticationResult is returned from a PackageAuthentication
@@ -415,7 +420,7 @@ func (s signatureAuthentication) AuthenticatePackage(location PackageLocation) (
 	if err != nil {
 		return nil, fmt.Errorf("error creating HashiCorp keyring: %s", err)
 	}
-	_, err = openpgp.CheckDetachedSignature(hashicorpKeyring, bytes.NewReader(s.Document), bytes.NewReader(s.Signature))
+	_, err = s.checkDetachedSignature(hashicorpKeyring, bytes.NewReader(s.Document), bytes.NewReader(s.Signature), openpgpConfig)
 	if err == nil {
 		return &PackageAuthenticationResult{result: officialProvider, KeyID: keyID}, nil
 	}
@@ -438,7 +443,7 @@ func (s signatureAuthentication) AuthenticatePackage(location PackageLocation) (
 			return nil, fmt.Errorf("error decoding trust signature: %s", err)
 		}
 
-		_, err = openpgp.CheckDetachedSignature(hashicorpPartnersKeyring, authorKey.Body, trustSignature.Body)
+		_, err = s.checkDetachedSignature(hashicorpPartnersKeyring, authorKey.Body, trustSignature.Body, openpgpConfig)
 		if err != nil {
 			return nil, fmt.Errorf("error verifying trust signature: %s", err)
 		}
@@ -449,6 +454,30 @@ func (s signatureAuthentication) AuthenticatePackage(location PackageLocation) (
 	// We have a valid signature, but it's not from the HashiCorp key, and it
 	// also isn't a trusted partner. This is a community provider.
 	return &PackageAuthenticationResult{result: communityProvider, KeyID: keyID}, nil
+}
+
+// (jonasz-lasut) Backported from upstream hashicorp/terraform commit
+// 0d4a29f7f3, which this fork never picked up after diverging at the
+// go-crypto migration (1fe57d457, June 2023). HashiCorp's registry-served
+// provider signing key (34365D9472D7468F) has an embedded expiration of
+// 2026-04-18; without this, every provider install fails authentication
+// with "openpgp: key expired" now that date has passed.
+//
+// checkDetachedSignature wraps openpgp.CheckDetachedSignature, treating an
+// expired signing key as valid. Provider authors are not required to
+// re-sign old releases when a signing key is later rotated or expires, so
+// a package that was validly signed while the key was still current should
+// keep authenticating. Any other signature error (unknown issuer, revoked
+// key, tampered signature, etc.) is still a hard failure.
+func (s signatureAuthentication) checkDetachedSignature(keyring openpgp.KeyRing, signed, signature io.Reader, config *openpgpPacket.Config) (*openpgp.Entity, error) {
+	entity, err := openpgp.CheckDetachedSignature(keyring, signed, signature, config)
+	if err == openpgpErrors.ErrKeyExpired {
+		for id := range entity.Identities {
+			log.Printf("[WARN] signing key has expired, but the package signature is otherwise valid: %s", id)
+		}
+		err = nil
+	}
+	return entity, err
 }
 
 func (s signatureAuthentication) AcceptableHashes() []Hash {
@@ -509,7 +538,7 @@ func (s signatureAuthentication) findSigningKey() (*SigningKey, string, error) {
 			return nil, "", fmt.Errorf("error decoding signing key: %s", err)
 		}
 
-		entity, err := openpgp.CheckDetachedSignature(keyring, bytes.NewReader(s.Document), bytes.NewReader(s.Signature))
+		entity, err := s.checkDetachedSignature(keyring, bytes.NewReader(s.Document), bytes.NewReader(s.Signature), openpgpConfig)
 
 		// If the signature issuer does not match the the key, keep trying the
 		// rest of the provided keys.
